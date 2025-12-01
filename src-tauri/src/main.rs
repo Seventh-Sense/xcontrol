@@ -52,13 +52,12 @@ struct ServicesConfig {
 fn default_max_retries() -> usize { 30 }
 fn default_retry_interval() -> u64 { 1000 }
 
-// 全局进程管理器
-type ProcessManager = Arc<Mutex<HashMap<String, ProcessInfo>>>;
+// 全局进程管理器 - 现在只存储服务信息，不存储PID
+type ProcessManager = Arc<Mutex<HashMap<String, ServiceInfo>>>;
 
 #[derive(Clone)]
-struct ProcessInfo {
-    pid: u32,
-    name: String,
+struct ServiceInfo {
+    executable: String,  // 存储可执行文件名用于清理
 }
 
 /// 服务状态事件的数据结构
@@ -113,10 +112,10 @@ fn load_services_config() -> Result<ServicesConfig, Box<dyn std::error::Error + 
     Err(error_msg.into())
 }
 
-/// 检查并杀死指定名称的进程
-fn kill_existing_processes(process_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("正在检查系统中是否存在 {} 进程...", process_name);
-
+/// 获取指定进程名的所有进程PID
+fn get_processes_by_name(process_name: &str) -> Result<Vec<u32>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut pids = Vec::new();
+    
     let mut cmd = Command::new("tasklist");
     cmd.args(&["/FI", &format!("IMAGENAME eq {}", process_name), "/FO", "CSV", "/NH"]);
 
@@ -140,24 +139,34 @@ fn kill_existing_processes(process_name: &str) -> Result<(), Box<dyn std::error:
         String::from_utf8(output.stdout)?
     };
 
-    let mut found_processes = false;
-    
     for line in output_str.lines() {
-        if line.contains(process_name) {
-            found_processes = true;
+        if line.contains(process_name) && !line.contains("找不到任务") && !line.contains("INFO: No tasks") {
             let parts: Vec<&str> = line.split(',').collect();
             if parts.len() >= 2 {
                 let pid_str = parts[1].trim_matches('"').trim();
                 if let Ok(pid) = pid_str.parse::<u32>() {
-                    println!("发现已存在的 {} 进程，PID: {}", process_name, pid);
-                    kill_process_by_pid(pid);
+                    pids.push(pid);
                 }
             }
         }
     }
 
-    if !found_processes {
+    Ok(pids)
+}
+
+/// 检查并杀死指定名称的进程
+fn kill_existing_processes(process_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("正在检查系统中是否存在 {} 进程...", process_name);
+
+    let pids = get_processes_by_name(process_name)?;
+    
+    if pids.is_empty() {
         println!("未发现运行中的 {} 进程", process_name);
+    } else {
+        for pid in pids {
+            println!("发现已存在的 {} 进程，PID: {}", process_name, pid);
+            kill_process_by_pid(pid);
+        }
     }
 
     Ok(())
@@ -228,12 +237,11 @@ fn spawn_service_process(
     let child = cmd.spawn()?;
     let pid = child.id();
 
-    // 保存进程信息
+    // 保存服务信息（不保存PID，因为可能会变化）
     {
         let mut manager = process_manager.lock().unwrap();
-        manager.insert(service.name.clone(), ProcessInfo {
-            pid,
-            name: service.name.clone(),
+        manager.insert(service.name.clone(), ServiceInfo {
+            executable: service.executable.clone(),
         });
     }
 
@@ -344,14 +352,35 @@ async fn start_all_services_and_notify(window: WebviewWindow, process_manager: P
     }
 }
 
-/// 应用退出时的清理函数
+/// 应用退出时的清理函数 - 修改为使用进程名而不是PID
 fn cleanup_on_exit(process_manager: ProcessManager) {
     println!("应用正在退出，执行清理操作...");
     let manager = process_manager.lock().unwrap();
-    for (service_name, process_info) in manager.iter() {
-        println!("正在终止 {} 服务进程 (PID: {} {})...", service_name, process_info.name, process_info.pid);
-        kill_process_by_pid(process_info.pid);
+    
+    for (service_name, service_info) in manager.iter() {
+        println!("正在查找并终止 {} 服务的所有进程...", service_name);
+        
+        // 使用进程名查找所有相关进程并终止
+        match get_processes_by_name(&service_info.executable) {
+            Ok(pids) => {
+                if pids.is_empty() {
+                    println!("未找到 {} 服务的运行进程", service_name);
+                } else {
+                    for pid in pids {
+                        println!("正在终止 {} 服务进程 (PID: {})...", service_name, pid);
+                        kill_process_by_pid(pid);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("查找 {} 服务进程时出错: {}", service_name, e);
+            }
+        }
     }
+    
+    // 等待进程完全终止
+    std::thread::sleep(Duration::from_millis(1000));
+    println!("清理操作完成");
 }
 
 /// 聚焦并显示现有窗口
