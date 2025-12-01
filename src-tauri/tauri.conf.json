@@ -19,7 +19,8 @@
         "minWidth": 800,
         "minHeight": 600,
         "backgroundColor": "#383477",
-        "url": "index.html"
+        "url": "index.html",
+        "dragDropEnabled": false
       }
     ],
     "security": {
