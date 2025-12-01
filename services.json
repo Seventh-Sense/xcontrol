@@ -1,0 +1,44 @@
+{
+  "services": [
+    {
+      "name": "xnode",
+      "executable": "xnode.exe",
+      "working_dir": "F:\\XControl-1.3.1-win\\xnode",
+      "args": ["run", "--env-file", "../.env"],
+      "health_check": {
+        "enabled": true,
+        "url": "http://127.0.0.1:9860",
+        "endpoint": "/",
+        "max_retries": 30,
+        "retry_interval_ms": 1000
+      }
+    },
+    {
+      "name": "nanomq",
+      "executable": "nanomq.exe",
+      "working_dir": "F:\\XControl-1.3.1-win\\nanomq\\bin",
+      "args": ["start", "--conf", "nanomq.conf"],
+      "health_check": {
+        "enabled": false
+      }
+    },
+    {
+      "name": "xnc",
+      "executable": "xnc.exe",
+      "working_dir": "F:\\XControl-1.3.1-win\\device",
+      "args": [],
+      "health_check": {
+        "enabled": false
+      }
+    },
+    {
+      "name": "xplay",
+      "executable": "xplay.exe",
+      "working_dir": "F:\\XControl-1.3.1-win\\xplay",
+      "args": [],
+      "health_check": {
+        "enabled": false
+      }
+    }
+  ]
+}
