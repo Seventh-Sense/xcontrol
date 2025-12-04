@@ -1,7 +1,224 @@
-# Tauri + Vue + TypeScript
+# XControl Tauri 项目说明书
+## 1. 项目概述
+### 1.1 项目名称
+XControl
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+### 1.2 项目定位
+XControl 是一款基于 Tauri 框架开发的跨平台（主要面向 Windows）服务管理工具，用于自动化启动、监控和管理多个后台服务进程，并提供可视化的启动状态反馈。该工具能够自动检测并清理已存在的同名进程，执行服务健康检查，并在应用退出时自动清理所有启动的服务进程。
 
-## Recommended IDE Setup
+### 1.3 核心功能
+- 自动加载服务配置文件（services.json）
+- 启动前清理同名运行进程
+- 启动指定的后台服务进程
+- 服务健康状态检查（HTTP 接口检测）
+- 向前端发送服务启动状态事件
+- 应用退出时自动终止所有启动的服务进程
+- 单实例运行（防止重复启动）
+- 可视化启动加载界面，支持错误提示
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## 2. 技术架构
+### 2.1 技术栈
+| 组件 | 技术/框架 | 版本/说明 |
+|------|-----------|-----------|
+| 后端核心 | Rust | 2021 Edition |
+| 桌面框架 | Tauri | ^2.0.0-rc |
+| 前端框架 | Vue 3 | 组合式 API (Setup Script) |
+| 序列化 | Serde | 1.0（支持 JSON 序列化/反序列化） |
+| HTTP 客户端 | reqwest | 0.11（健康检查） |
+| 异步运行时 | Tokio | 1.0 |
+| 编码处理 | encoding_rs | 0.8（Windows GBK 编码支持） |
+| Windows API | winapi | 0.3（进程管理） |
+| 单实例插件 | tauri-plugin-single-instance | 2.0 |
+
+### 2.2 架构分层
+```
+┌─────────────────────────────────┐
+│ 前端层 (Vue 3)                  │
+│ - 启动加载界面                  │
+│ - 事件监听与状态展示            │
+│ - 页面跳转逻辑                  │
+├─────────────────────────────────┤
+│ Tauri 桥接层                    │
+│ - 事件通信 (emit/listen)        │
+│ - 窗口管理                      │
+│ - 单实例控制                    │
+├─────────────────────────────────┤
+│ Rust 核心层                     │
+│ - 配置加载与解析                │
+│ - 进程管理（启动/终止/检测）    │
+│ - 服务健康检查                  │
+│ - 资源清理                      │
+└─────────────────────────────────┘
+```
+
+## 3. 核心功能详解
+### 3.1 配置文件管理
+#### 3.1.1 配置文件格式（services.json）
+```json
+{
+  "services": [
+    {
+      "name": "示例服务",
+      "executable": "service.exe",
+      "working_dir": "./service_dir",
+      "args": ["--port", "9860", "--config", "app.conf"],
+      "health_check": {
+        "enabled": true,
+        "url": "http://127.0.0.1:9860",
+        "endpoint": "/health",
+        "max_retries": 30,
+        "retry_interval_ms": 1000
+      }
+    }
+  ]
+}
+```
+
+#### 3.1.2 配置文件加载逻辑
+程序会按以下优先级查找配置文件：
+1. 开发环境路径：当前目录、上级目录的 services.json
+2. 生产环境路径：可执行文件所在目录、父目录、resources 子目录
+3. 加载失败时输出详细的路径信息便于调试
+
+### 3.2 进程管理
+#### 3.2.1 进程清理
+- 启动服务前自动检测并终止同名进程
+- 使用 `tasklist` 命令（Windows）获取进程列表
+- 支持 GBK 编码解析（解决 Windows 中文乱码问题）
+- 通过 PID 调用 Windows API 终止进程（`TerminateProcess`）
+
+#### 3.2.2 进程启动
+- 创建无窗口进程（`CREATE_NO_WINDOW` 标志）
+- 设置工作目录和启动参数
+- 重定向标准输入/输出/错误到 null
+- 记录服务信息（可执行文件名）用于退出清理
+
+### 3.3 健康检查机制
+- 基于 HTTP GET 请求的健康状态检测
+- 可配置最大重试次数和重试间隔
+- 默认配置：30 次重试，每次间隔 1 秒
+- 非 2xx 响应码视为健康检查失败
+- 健康检查禁用时直接返回成功状态
+
+### 3.4 事件通信
+| 事件名称 | 触发时机 | 数据结构 |
+|----------|----------|----------|
+| `service_starting` | 服务开始启动 | `{service_name, url, error, status: "starting"}` |
+| `service_ready` | 健康检查成功 | `{service_name, url, error, status: "ready"}` |
+| `service_error` | 启动失败/健康检查超时 | `{service_name, url, error, status: "error"}` |
+
+### 3.5 应用生命周期管理
+- 应用启动：自动加载配置并启动所有服务
+- 窗口关闭：触发清理操作，终止所有启动的服务进程
+- 重复启动：聚焦到已存在的窗口，防止多实例运行
+- 异常处理：错误事件触发后 5 秒自动关闭应用
+
+## 4. 前端界面
+### 4.1 界面组成
+- 启动加载界面：带有动画效果的 SVG 加载图标
+- 状态文本：显示加载状态或错误信息
+- 错误提示：红色文本显示错误信息
+- 自动跳转：服务就绪后自动跳转到服务页面
+
+### 4.2 样式设计
+- 主色调：#383477（深紫色）
+- 错误色：#ff3b30（红色）
+- 淡出动画：0.5 秒渐变过渡
+- 响应式布局：适配不同窗口尺寸
+
+### 4.3 交互逻辑
+1. 页面挂载后设置事件监听器
+2. 监听服务就绪/错误事件
+3. 服务就绪：隐藏加载界面，跳转到服务页面
+4. 服务错误：显示错误信息，5 秒后关闭应用
+
+## 5. 构建与部署
+### 5.1 构建配置（tauri.conf.json）
+- 产品名称：xcontrol
+- 标识符：com.tauri-app.xcontrol
+- 窗口配置：1200x800，最小 800x600
+- 前端构建：pnpm dev/build 命令
+- 资源打包：包含 services.json
+- 单实例插件：启用
+
+### 5.2 构建优化（Cargo.toml）
+- 发布配置：启用 LTO 优化
+- 代码生成单元：1（最大化优化）
+- 恐慌处理：abort（减小二进制体积）
+- 符号剥离：strip = true
+
+### 5.3 构建命令
+```bash
+# 开发模式
+pnpm tauri dev
+
+# 生产构建
+pnpm tauri build
+```
+
+## 6. 运行环境要求
+### 6.1 系统要求
+- Windows：Windows 7 及以上（x86/x64）
+- 依赖：VC++ 运行时库
+- 权限：需要进程管理权限（终止其他进程）
+
+### 6.2 开发环境
+- Rust：1.60+（支持 2021 Edition）
+- Node.js：16+
+- PNPM：最新版
+- Tauri CLI：^2.0.0-rc
+
+## 7. 错误处理与日志
+### 7.1 错误类型
+- 配置文件未找到：输出所有尝试的路径
+- 进程启动失败：检查可执行文件路径
+- 健康检查超时：检查服务端口和健康接口
+- 权限不足：无法终止系统进程
+
+### 7.2 日志输出
+- 控制台输出关键操作日志
+- 错误信息包含详细上下文
+- 进程管理操作记录 PID 和进程名
+- 配置加载过程输出路径查找日志
+
+## 8. 扩展与维护
+### 8.1 功能扩展建议
+1. 添加日志文件输出（替代控制台输出）
+2. 支持更多健康检查类型（TCP、文件检测）
+3. 增加服务启停手动控制界面
+4. 支持配置文件热更新
+5. 添加服务状态监控仪表盘
+
+### 8.2 维护注意事项
+1. Windows API 调用需注意安全检查（空指针、权限）
+2. 进程终止操作需谨慎，避免误杀系统进程
+3. 配置文件路径需适配不同部署场景
+4. 健康检查超时时间需根据服务特性调整
+5. 单实例控制需处理异常退出后的残留锁
+
+## 9. 故障排除
+### 9.1 常见问题
+1. **配置文件加载失败**：检查 services.json 路径和格式
+2. **进程无法终止**：以管理员身份运行程序
+3. **健康检查失败**：检查服务端口和健康接口是否正确
+4. **中文乱码**：程序已内置 GBK 编码支持，无需额外处理
+5. **重复启动**：程序会自动聚焦到已有窗口，属正常行为
+
+### 9.2 调试技巧
+1. 开发模式下启用 DevTools 查看前端日志
+2. 检查控制台输出的配置加载路径
+3. 验证 services.json 的 JSON 格式合法性
+4. 确认服务可执行文件路径和权限
+
+## 10. 许可证与版权
+本项目基于 Tauri 框架的开源协议发布，具体许可证信息请参考 Tauri 官方文档。项目中使用的第三方库遵循其各自的开源许可证。
+
+---
+
+**附录：核心 API 参考**
+- `load_services_config()`：加载服务配置
+- `kill_existing_processes()`：终止同名进程
+- `spawn_service_process()`：启动服务进程
+- `check_service_health()`：执行健康检查
+- `cleanup_on_exit()`：应用退出清理
+- `focus_existing_window()`：聚焦已有窗口
