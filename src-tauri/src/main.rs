@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{async_runtime, Emitter, Manager, WebviewWindow};
@@ -13,13 +13,13 @@ use tokio::time::sleep;
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
-use winapi::um::processthreadsapi::{OpenProcess, TerminateProcess};
-#[cfg(windows)]
-use winapi::um::winnt::{PROCESS_TERMINATE, PROCESS_QUERY_INFORMATION};
+use encoding_rs::GBK;
 #[cfg(windows)]
 use winapi::um::handleapi::CloseHandle;
 #[cfg(windows)]
-use encoding_rs::GBK;
+use winapi::um::processthreadsapi::{OpenProcess, TerminateProcess};
+#[cfg(windows)]
+use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE};
 
 // --- 配置结构 ---
 #[derive(Deserialize, Clone)]
@@ -42,6 +42,7 @@ struct HealthCheckConfig {
     max_retries: usize,
     #[serde(default = "default_retry_interval")]
     retry_interval_ms: u64,
+    is_no_window: bool,
 }
 
 #[derive(Deserialize)]
@@ -49,15 +50,19 @@ struct ServicesConfig {
     services: Vec<ServiceConfig>,
 }
 
-fn default_max_retries() -> usize { 30 }
-fn default_retry_interval() -> u64 { 1000 }
+fn default_max_retries() -> usize {
+    30
+}
+fn default_retry_interval() -> u64 {
+    1000
+}
 
 // 全局进程管理器 - 现在只存储服务信息，不存储PID
 type ProcessManager = Arc<Mutex<HashMap<String, ServiceInfo>>>;
 
 #[derive(Clone)]
 struct ServiceInfo {
-    executable: String,  // 存储可执行文件名用于清理
+    executable: String, // 存储可执行文件名用于清理
 }
 
 /// 服务状态事件的数据结构
@@ -78,14 +83,26 @@ fn load_services_config() -> Result<ServicesConfig, Box<dyn std::error::Error + 
         PathBuf::from("./services.json"),
         PathBuf::from("../services.json"),
         // 生产环境 - 可执行文件目录及其父目录
-        std::env::current_exe()?.parent().unwrap().join("services.json"),
-        std::env::current_exe()?.parent().unwrap().parent().unwrap().join("services.json"),
+        std::env::current_exe()?
+            .parent()
+            .unwrap()
+            .join("services.json"),
+        std::env::current_exe()?
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services.json"),
         // Tauri 应用目录
-        std::env::current_exe()?.parent().unwrap().join("resources").join("services.json"),
+        std::env::current_exe()?
+            .parent()
+            .unwrap()
+            .join("resources")
+            .join("services.json"),
     ];
-    
+
     println!("正在查找配置文件...");
-    
+
     for path in &possible_paths {
         println!("尝试路径: {:?}", path);
         if path.exists() {
@@ -96,28 +113,36 @@ fn load_services_config() -> Result<ServicesConfig, Box<dyn std::error::Error + 
             return Ok(config);
         }
     }
-    
+
     // 如果找不到配置文件，输出当前工作目录和可执行文件路径用于调试
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("unknown"));
     let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("unknown"));
-    
+
     let error_msg = format!(
         "在所有可能的位置都找不到 services.json 配置文件。\n当前工作目录: {:?}\n可执行文件路径: {:?}\n尝试的路径: {:#?}",
         current_dir,
         exe_path,
         possible_paths
     );
-    
+
     println!("{}", error_msg);
     Err(error_msg.into())
 }
 
 /// 获取指定进程名的所有进程PID
-fn get_processes_by_name(process_name: &str) -> Result<Vec<u32>, Box<dyn std::error::Error + Send + Sync>> {
+fn get_processes_by_name(
+    process_name: &str,
+) -> Result<Vec<u32>, Box<dyn std::error::Error + Send + Sync>> {
     let mut pids = Vec::new();
-    
+
     let mut cmd = Command::new("tasklist");
-    cmd.args(&["/FI", &format!("IMAGENAME eq {}", process_name), "/FO", "CSV", "/NH"]);
+    cmd.args(&[
+        "/FI",
+        &format!("IMAGENAME eq {}", process_name),
+        "/FO",
+        "CSV",
+        "/NH",
+    ]);
 
     #[cfg(windows)]
     {
@@ -140,7 +165,10 @@ fn get_processes_by_name(process_name: &str) -> Result<Vec<u32>, Box<dyn std::er
     };
 
     for line in output_str.lines() {
-        if line.contains(process_name) && !line.contains("找不到任务") && !line.contains("INFO: No tasks") {
+        if line.contains(process_name)
+            && !line.contains("找不到任务")
+            && !line.contains("INFO: No tasks")
+        {
             let parts: Vec<&str> = line.split(',').collect();
             if parts.len() >= 2 {
                 let pid_str = parts[1].trim_matches('"').trim();
@@ -155,11 +183,13 @@ fn get_processes_by_name(process_name: &str) -> Result<Vec<u32>, Box<dyn std::er
 }
 
 /// 检查并杀死指定名称的进程
-fn kill_existing_processes(process_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn kill_existing_processes(
+    process_name: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("正在检查系统中是否存在 {} 进程...", process_name);
 
     let pids = get_processes_by_name(process_name)?;
-    
+
     if pids.is_empty() {
         println!("未发现运行中的 {} 进程", process_name);
     } else {
@@ -224,14 +254,20 @@ fn spawn_service_process(
     let mut cmd = Command::new(&exe_path);
     cmd.args(&service.args).current_dir(&working_dir);
 
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    // cmd.stdin(Stdio::null())
+    //     .stdout(Stdio::null())
+    //     .stderr(Stdio::null());
 
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        // 优化：明确判断is_no_window，注释说明逻辑
+        if service.health_check.is_no_window {
+            println!("{} 服务将以无窗口模式启动", service.name);
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        } else {
+            println!("{} 服务将显示窗口启动", service.name);
+        }
     }
 
     let child = cmd.spawn()?;
@@ -240,9 +276,12 @@ fn spawn_service_process(
     // 保存服务信息（不保存PID，因为可能会变化）
     {
         let mut manager = process_manager.lock().unwrap();
-        manager.insert(service.name.clone(), ServiceInfo {
-            executable: service.executable.clone(),
-        });
+        manager.insert(
+            service.name.clone(),
+            ServiceInfo {
+                executable: service.executable.clone(),
+            },
+        );
     }
 
     println!("{} 服务进程已启动，PID: {}", service.name, pid);
@@ -256,7 +295,10 @@ async fn check_service_health(service: &ServiceConfig) -> bool {
     }
 
     let client = reqwest::Client::new();
-    let health_check_url = format!("{}{}", service.health_check.url, service.health_check.endpoint);
+    let health_check_url = format!(
+        "{}{}",
+        service.health_check.url, service.health_check.endpoint
+    );
 
     for attempt in 1..=service.health_check.max_retries {
         match client.get(&health_check_url).send().await {
@@ -270,7 +312,10 @@ async fn check_service_health(service: &ServiceConfig) -> bool {
             Ok(response) => {
                 println!(
                     "{} 服务未就绪，状态码: {}（尝试 {} / {}）",
-                    service.name, response.status(), attempt, service.health_check.max_retries
+                    service.name,
+                    response.status(),
+                    attempt,
+                    service.health_check.max_retries
                 );
             }
             Err(e) => {
@@ -280,7 +325,10 @@ async fn check_service_health(service: &ServiceConfig) -> bool {
                 );
             }
         }
-        sleep(Duration::from_millis(service.health_check.retry_interval_ms)).await;
+        sleep(Duration::from_millis(
+            service.health_check.retry_interval_ms,
+        ))
+        .await;
     }
 
     false
@@ -318,7 +366,7 @@ async fn start_all_services_and_notify(window: WebviewWindow, process_manager: P
             Ok(_) => {
                 // 等待一小段时间让进程完全启动
                 sleep(Duration::from_millis(2000)).await;
-                
+
                 // 进行健康检查
                 if check_service_health(service).await {
                     let event_data = ServiceEventData {
@@ -356,10 +404,10 @@ async fn start_all_services_and_notify(window: WebviewWindow, process_manager: P
 fn cleanup_on_exit(process_manager: ProcessManager) {
     println!("应用正在退出，执行清理操作...");
     let manager = process_manager.lock().unwrap();
-    
+
     for (service_name, service_info) in manager.iter() {
         println!("正在查找并终止 {} 服务的所有进程...", service_name);
-        
+
         // 使用进程名查找所有相关进程并终止
         match get_processes_by_name(&service_info.executable) {
             Ok(pids) => {
@@ -377,7 +425,7 @@ fn cleanup_on_exit(process_manager: ProcessManager) {
             }
         }
     }
-    
+
     // 等待进程完全终止
     std::thread::sleep(Duration::from_millis(1000));
     println!("清理操作完成");
@@ -409,22 +457,20 @@ fn main() {
             // 启动所有服务
             async_runtime::spawn(start_all_services_and_notify(
                 main_window,
-                process_manager.clone()
+                process_manager.clone(),
             ));
 
             Ok(())
         })
-        .on_window_event(move |_window, event| {
-            match event {
-                tauri::WindowEvent::CloseRequested { .. } => {
-                    println!("窗口关闭请求");
-                    cleanup_on_exit(cleanup_manager.clone());
-                }
-                tauri::WindowEvent::Destroyed => {
-                    println!("窗口已销毁");
-                }
-                _ => {}
+        .on_window_event(move |_window, event| match event {
+            tauri::WindowEvent::CloseRequested { .. } => {
+                println!("窗口关闭请求");
+                cleanup_on_exit(cleanup_manager.clone());
             }
+            tauri::WindowEvent::Destroyed => {
+                println!("窗口已销毁");
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用失败");

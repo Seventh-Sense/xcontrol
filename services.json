@@ -10,8 +10,9 @@
         "url": "http://127.0.0.1:9860",
         "endpoint": "/",
         "max_retries": 30,
-        "retry_interval_ms": 1000
-      }
+        "retry_interval_ms": 1000,
+        "is_no_window": true
+      } 
     },
     {
       "name": "nanomq",
@@ -19,7 +20,8 @@
       "working_dir": "./nanomq/bin",
       "args": ["start", "--conf", "nanomq.conf"],
       "health_check": {
-        "enabled": false
+        "enabled": false,
+        "is_no_window": true
       }
     },
     {
@@ -28,7 +30,8 @@
       "working_dir": "./device",
       "args": [],
       "health_check": {
-        "enabled": false
+        "enabled": false,
+        "is_no_window": true
       }
     },
     {
@@ -37,7 +40,8 @@
       "working_dir": "./xplay",
       "args": [],
       "health_check": {
-        "enabled": false
+        "enabled": false,
+        "is_no_window": true
       }
     }
   ]
