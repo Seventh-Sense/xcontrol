@@ -10,39 +10,24 @@
         "url": "http://127.0.0.1:9860",
         "endpoint": "/",
         "max_retries": 30,
-        "retry_interval_ms": 1000,
-        "is_no_window": true
-      } 
+        "retry_interval_ms": 1000
+      }
     },
     {
       "name": "nanomq",
       "executable": "nanomq.exe",
       "working_dir": "./nanomq/bin",
-      "args": ["start", "--conf", "nanomq.conf"],
-      "health_check": {
-        "enabled": false,
-        "is_no_window": true
-      }
+      "args": ["start", "--conf", "nanomq.conf"]
     },
     {
       "name": "xnc",
       "executable": "xnc.exe",
-      "working_dir": "./device",
-      "args": [],
-      "health_check": {
-        "enabled": false,
-        "is_no_window": true
-      }
+      "working_dir": "./device"
     },
     {
       "name": "xplay",
       "executable": "xplay.exe",
-      "working_dir": "./xplay",
-      "args": [],
-      "health_check": {
-        "enabled": false,
-        "is_no_window": true
-      }
+      "working_dir": "./xplay"
     }
   ]
 }

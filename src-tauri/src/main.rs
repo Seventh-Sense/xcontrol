@@ -27,22 +27,39 @@ struct ServiceConfig {
     name: String,
     executable: String,
     working_dir: String,
-    args: Vec<String>,
-    health_check: HealthCheckConfig,
+    #[serde(default)]
+    debug: bool, // 默认为 false
+    #[serde(default)]
+    args: Vec<String>, // 默认为空数组
+    #[serde(default)]
+    health_check: Option<HealthCheckConfig>, // 可选字段
 }
 
 #[derive(Deserialize, Clone)]
 struct HealthCheckConfig {
-    enabled: bool,
     #[serde(default)]
-    url: String,
+    enabled: bool, // 默认为 false
     #[serde(default)]
-    endpoint: String,
+    url: String, // 默认为空字符串
+    #[serde(default)]
+    endpoint: String, // 默认为空字符串
     #[serde(default = "default_max_retries")]
     max_retries: usize,
     #[serde(default = "default_retry_interval")]
-    retry_interval_ms: u64,
-    is_no_window: bool,
+    retry_interval_ms: u64
+}
+
+// 为 HealthCheckConfig 实现 Default trait
+impl Default for HealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: String::new(),
+            endpoint: String::new(),
+            max_retries: default_max_retries(),
+            retry_interval_ms: default_retry_interval(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -252,17 +269,19 @@ fn spawn_service_process(
     let working_dir = PathBuf::from(&service.working_dir);
 
     let mut cmd = Command::new(&exe_path);
-    cmd.args(&service.args).current_dir(&working_dir);
-
-    // cmd.stdin(Stdio::null())
-    //     .stdout(Stdio::null())
-    //     .stderr(Stdio::null());
+    
+    // 如果有参数才设置，避免设置空参数
+    if !service.args.is_empty() {
+        cmd.args(&service.args);
+    }
+    
+    cmd.current_dir(&working_dir);
 
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        // 优化：明确判断is_no_window，注释说明逻辑
-        if service.health_check.is_no_window {
+        // 检查debug字段，默认为false（不显示窗口）
+        if !service.debug {
             println!("{} 服务将以无窗口模式启动", service.name);
             cmd.creation_flags(CREATE_NO_WINDOW);
         } else {
@@ -288,24 +307,36 @@ fn spawn_service_process(
     Ok(())
 }
 
+/// 获取服务的健康检查配置，如果没有配置则返回默认配置
+fn get_health_check_config(service: &ServiceConfig) -> HealthCheckConfig {
+    service.health_check.clone().unwrap_or_default()
+}
+
 /// 健康检查
 async fn check_service_health(service: &ServiceConfig) -> bool {
-    if !service.health_check.enabled {
+    let health_check = get_health_check_config(service);
+    
+    if !health_check.enabled {
+        println!("{} 服务未启用健康检查，跳过", service.name);
         return true; // 不需要健康检查的服务直接返回成功
     }
 
-    let client = reqwest::Client::new();
-    let health_check_url = format!(
-        "{}{}",
-        service.health_check.url, service.health_check.endpoint
-    );
+    if health_check.url.is_empty() {
+        println!("{} 服务健康检查URL为空，跳过检查", service.name);
+        return true;
+    }
 
-    for attempt in 1..=service.health_check.max_retries {
+    let client = reqwest::Client::new();
+    let health_check_url = format!("{}{}", health_check.url, health_check.endpoint);
+
+    println!("开始对 {} 服务进行健康检查，URL: {}", service.name, health_check_url);
+
+    for attempt in 1..=health_check.max_retries {
         match client.get(&health_check_url).send().await {
             Ok(response) if response.status().is_success() => {
                 println!(
                     "{} 服务已就绪！（尝试 {} / {}）",
-                    service.name, attempt, service.health_check.max_retries
+                    service.name, attempt, health_check.max_retries
                 );
                 return true;
             }
@@ -315,22 +346,20 @@ async fn check_service_health(service: &ServiceConfig) -> bool {
                     service.name,
                     response.status(),
                     attempt,
-                    service.health_check.max_retries
+                    health_check.max_retries
                 );
             }
             Err(e) => {
                 println!(
                     "{} 无法连接到服务: {}（尝试 {} / {}）",
-                    service.name, e, attempt, service.health_check.max_retries
+                    service.name, e, attempt, health_check.max_retries
                 );
             }
         }
-        sleep(Duration::from_millis(
-            service.health_check.retry_interval_ms,
-        ))
-        .await;
+        sleep(Duration::from_millis(health_check.retry_interval_ms)).await;
     }
 
+    println!("{} 服务健康检查失败，已达到最大重试次数", service.name);
     false
 }
 
@@ -351,7 +380,19 @@ async fn start_all_services_and_notify(window: WebviewWindow, process_manager: P
         }
     };
 
+    println!("开始启动 {} 个服务", config.services.len());
+
     for service in &config.services {
+        println!("处理服务: {}", service.name);
+        println!("  - 可执行文件: {}", service.executable);
+        println!("  - 工作目录: {}", service.working_dir);
+        println!("  - 调试模式: {}", service.debug);
+        println!("  - 参数: {:?}", service.args);
+        
+        // 打印健康检查配置
+        let health_check = get_health_check_config(service);
+        println!("  - 健康检查: enabled={}, url={}", health_check.enabled, health_check.url);
+
         // 通知前端服务正在启动
         let event_data = ServiceEventData {
             service_name: service.name.clone(),
@@ -369,9 +410,10 @@ async fn start_all_services_and_notify(window: WebviewWindow, process_manager: P
 
                 // 进行健康检查
                 if check_service_health(service).await {
+                    let health_check = get_health_check_config(service);
                     let event_data = ServiceEventData {
                         service_name: service.name.clone(),
-                        url: service.health_check.url.clone(),
+                        url: health_check.url.clone(),
                         error: String::new(),
                         status: "ready".to_string(),
                     };
