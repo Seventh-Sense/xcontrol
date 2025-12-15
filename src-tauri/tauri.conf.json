@@ -39,7 +39,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "../services.json"
+      "../services.dat"
     ]
   },
   "plugins": {

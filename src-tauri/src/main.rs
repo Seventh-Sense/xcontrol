@@ -96,26 +96,26 @@ fn load_services_config() -> Result<ServicesConfig, Box<dyn std::error::Error + 
     // 尝试多个可能的配置文件位置
     let possible_paths = vec![
         // 开发环境 - 项目根目录
-        PathBuf::from("services.json"),
-        PathBuf::from("./services.json"),
-        PathBuf::from("../services.json"),
+        PathBuf::from("services.dat"),
+        PathBuf::from("./services.dat"),
+        PathBuf::from("../services.dat"),
         // 生产环境 - 可执行文件目录及其父目录
         std::env::current_exe()?
             .parent()
             .unwrap()
-            .join("services.json"),
+            .join("services.dat"),
         std::env::current_exe()?
             .parent()
             .unwrap()
             .parent()
             .unwrap()
-            .join("services.json"),
+            .join("services.dat"),
         // Tauri 应用目录
         std::env::current_exe()?
             .parent()
             .unwrap()
             .join("resources")
-            .join("services.json"),
+            .join("services.dat"),
     ];
 
     println!("正在查找配置文件...");
@@ -136,7 +136,7 @@ fn load_services_config() -> Result<ServicesConfig, Box<dyn std::error::Error + 
     let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("unknown"));
 
     let error_msg = format!(
-        "在所有可能的位置都找不到 services.json 配置文件。\n当前工作目录: {:?}\n可执行文件路径: {:?}\n尝试的路径: {:#?}",
+        "在所有可能的位置都找不到 services.dat 配置文件。\n当前工作目录: {:?}\n可执行文件路径: {:?}\n尝试的路径: {:#?}",
         current_dir,
         exe_path,
         possible_paths
