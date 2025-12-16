@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::{Command};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{async_runtime, Emitter, Manager, WebviewWindow};
+use tauri::{async_runtime, Emitter, Manager, WebviewWindow, AppHandle};
 use tokio::time::sleep;
 
 #[cfg(windows)]
@@ -238,12 +238,6 @@ fn kill_process_by_pid(pid: u32) {
 
         CloseHandle(handle);
     }
-}
-
-#[cfg(not(windows))]
-fn kill_process_by_pid(pid: u32) {
-    use std::process::Command;
-    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
 }
 
 /// 启动单个服务进程
@@ -483,6 +477,21 @@ fn focus_existing_window(app_handle: &tauri::AppHandle) {
     }
 }
 
+/// 在后台线程执行清理并关闭应用
+fn cleanup_and_exit(app_handle: AppHandle, process_manager: ProcessManager) {
+    std::thread::spawn(move || {
+        println!("开始后台清理...");
+        
+        // 执行同步清理操作
+        cleanup_on_exit(process_manager);
+        
+        println!("清理完成，正在退出应用...");
+        
+        // 清理完成后退出应用
+        app_handle.exit(0);
+    });
+}
+
 fn main() {
     // 创建进程管理器
     let process_manager: ProcessManager = Arc::new(Mutex::new(HashMap::new()));
@@ -504,10 +513,19 @@ fn main() {
 
             Ok(())
         })
-        .on_window_event(move |_window, event| match event {
-            tauri::WindowEvent::CloseRequested { .. } => {
-                println!("窗口关闭请求");
-                cleanup_on_exit(cleanup_manager.clone());
+        .on_window_event(move |window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                println!("收到窗口关闭请求，先隐藏窗口...");
+                
+                // 阻止默认的关闭行为
+                api.prevent_close();
+                
+                // 立即隐藏窗口
+                let _ = window.hide();
+                
+                // 获取 AppHandle 并在后台执行清理
+                let app_handle = window.app_handle().clone();
+                cleanup_and_exit(app_handle, cleanup_manager.clone());
             }
             tauri::WindowEvent::Destroyed => {
                 println!("窗口已销毁");
