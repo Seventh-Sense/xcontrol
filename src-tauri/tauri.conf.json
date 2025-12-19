@@ -21,6 +21,7 @@
         "backgroundColor": "#383477",
         "url": "index.html",
         "dragDropEnabled": false,
+       
         "devtools": true
       }
     ],
