@@ -3,7 +3,7 @@
     {
       "name": "xnode",
       "executable": "xnode.exe",
-      "working_dir": "./xnode",
+      "working_dir": "F://end//XControl-1.4.1-win//xnode",
       "args": ["run", "--env-file", "../.env"],
       "health_check": {
         "enabled": true,
@@ -16,18 +16,18 @@
     {
       "name": "nanomq",
       "executable": "nanomq.exe",
-      "working_dir": "./nanomq/bin",
+      "working_dir": "F://end//XControl-1.4.1-win//nanomq//bin",
       "args": ["start", "--conf", "nanomq.conf"]
     },
     {
       "name": "xnc",
       "executable": "xnc.exe",
-      "working_dir": "./device"
+      "working_dir": "F://end//XControl-1.4.1-win//device"
     },
     {
       "name": "xplay",
       "executable": "xplay.exe",
-      "working_dir": "./xplay"
+      "working_dir": "F://end//XControl-1.4.1-win//xplay"
     }
   ]
 }
