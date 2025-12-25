@@ -6,12 +6,13 @@ use std::path::PathBuf;
 use std::process::{Command};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{async_runtime, Emitter, Manager, WebviewWindow, AppHandle};
+use tauri::{
+    async_runtime, AppHandle, Emitter, Manager, WebviewWindow, WindowEvent, Wry
+};
 use tokio::time::sleep;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-
 #[cfg(windows)]
 use encoding_rs::GBK;
 #[cfg(windows)]
@@ -20,6 +21,14 @@ use winapi::um::handleapi::CloseHandle;
 use winapi::um::processthreadsapi::{OpenProcess, TerminateProcess};
 #[cfg(windows)]
 use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE};
+#[cfg(windows)]
+use winapi::um::winuser::{UnregisterClassW, GetClassInfoW};
+#[cfg(windows)]
+use std::ffi::OsStr;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use std::ptr::null_mut;
 
 // --- 配置结构 ---
 #[derive(Deserialize, Clone)]
@@ -46,7 +55,7 @@ struct HealthCheckConfig {
     #[serde(default = "default_max_retries")]
     max_retries: usize,
     #[serde(default = "default_retry_interval")]
-    retry_interval_ms: u64
+    retry_interval_ms: u64,
 }
 
 // 为 HealthCheckConfig 实现 Default trait
@@ -137,9 +146,7 @@ fn load_services_config() -> Result<ServicesConfig, Box<dyn std::error::Error + 
 
     let error_msg = format!(
         "在所有可能的位置都找不到 services.dat 配置文件。\n当前工作目录: {:?}\n可执行文件路径: {:?}\n尝试的路径: {:#?}",
-        current_dir,
-        exe_path,
-        possible_paths
+        current_dir, exe_path, possible_paths
     );
 
     println!("{}", error_msg);
@@ -240,6 +247,12 @@ fn kill_process_by_pid(pid: u32) {
     }
 }
 
+#[cfg(not(windows))]
+fn kill_process_by_pid(pid: u32) {
+    // 非Windows平台实现
+    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+}
+
 /// 启动单个服务进程
 fn spawn_service_process(
     service: &ServiceConfig,
@@ -263,12 +276,12 @@ fn spawn_service_process(
     let working_dir = PathBuf::from(&service.working_dir);
 
     let mut cmd = Command::new(&exe_path);
-    
+
     // 如果有参数才设置，避免设置空参数
     if !service.args.is_empty() {
         cmd.args(&service.args);
     }
-    
+
     cmd.current_dir(&working_dir);
 
     #[cfg(windows)]
@@ -309,7 +322,7 @@ fn get_health_check_config(service: &ServiceConfig) -> HealthCheckConfig {
 /// 健康检查
 async fn check_service_health(service: &ServiceConfig) -> bool {
     let health_check = get_health_check_config(service);
-    
+
     if !health_check.enabled {
         println!("{} 服务未启用健康检查，跳过", service.name);
         return true; // 不需要健康检查的服务直接返回成功
@@ -382,7 +395,7 @@ async fn start_all_services_and_notify(window: WebviewWindow, process_manager: P
         println!("  - 工作目录: {}", service.working_dir);
         println!("  - 调试模式: {}", service.debug);
         println!("  - 参数: {:?}", service.args);
-        
+
         // 打印健康检查配置
         let health_check = get_health_check_config(service);
         println!("  - 健康检查: enabled={}, url={}", health_check.enabled, health_check.url);
@@ -439,13 +452,21 @@ async fn start_all_services_and_notify(window: WebviewWindow, process_manager: P
 /// 应用退出时的清理函数 - 修改为使用进程名而不是PID
 fn cleanup_on_exit(process_manager: ProcessManager) {
     println!("应用正在退出，执行清理操作...");
-    let manager = process_manager.lock().unwrap();
 
-    for (service_name, service_info) in manager.iter() {
+    // 使用作用域锁，避免长时间持有锁
+    let services: Vec<(String, String)> = {
+        let manager = process_manager.lock().unwrap();
+        manager
+            .iter()
+            .map(|(name, info)| (name.clone(), info.executable.clone()))
+            .collect()
+    };
+
+    for (service_name, executable) in services {
         println!("正在查找并终止 {} 服务的所有进程...", service_name);
 
         // 使用进程名查找所有相关进程并终止
-        match get_processes_by_name(&service_info.executable) {
+        match get_processes_by_name(&executable) {
             Ok(pids) => {
                 if pids.is_empty() {
                     println!("未找到 {} 服务的运行进程", service_name);
@@ -467,8 +488,33 @@ fn cleanup_on_exit(process_manager: ProcessManager) {
     println!("清理操作完成");
 }
 
+/// 释放Windows窗口类资源
+#[cfg(windows)]
+unsafe fn cleanup_window_classes() {
+    // 转换类名为宽字符
+    let class_name = OsStr::new("Chrome_WidgetWin_0")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+
+    let mut wnd_class = std::mem::zeroed();
+    // 检查类是否存在
+    if GetClassInfoW(null_mut(), class_name.as_ptr(), &mut wnd_class) != 0 {
+        // 注销窗口类
+        if UnregisterClassW(class_name.as_ptr(), null_mut()) == 0 {
+            let err = winapi::um::errhandlingapi::GetLastError();
+            if err != 1412 {
+                // 忽略"类仍有打开的窗口"错误
+                eprintln!("注销窗口类失败，错误码: {}", err);
+            }
+        } else {
+            println!("成功注销 Chrome_WidgetWin_0 窗口类");
+        }
+    }
+}
+
 /// 聚焦并显示现有窗口
-fn focus_existing_window(app_handle: &tauri::AppHandle) {
+fn focus_existing_window(app_handle: &AppHandle<Wry>) {
     if let Some(window) = app_handle.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -477,18 +523,33 @@ fn focus_existing_window(app_handle: &tauri::AppHandle) {
     }
 }
 
-/// 在后台线程执行清理并关闭应用
-fn cleanup_and_exit(app_handle: AppHandle, process_manager: ProcessManager) {
+/// 安全退出应用
+fn safe_exit(app_handle: AppHandle<Wry>, process_manager: ProcessManager) {
+    // 1. 立即隐藏窗口
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.hide();
+    }
+
+    // 2. 在后台线程执行清理
     std::thread::spawn(move || {
         println!("开始后台清理...");
-        
-        // 执行同步清理操作
+
+        // 执行进程清理
         cleanup_on_exit(process_manager);
-        
+
+        // Windows平台额外清理窗口类
+        #[cfg(windows)]
+        unsafe {
+            cleanup_window_classes();
+        }
+
         println!("清理完成，正在退出应用...");
-        
-        // 清理完成后退出应用
-        app_handle.exit(0);
+
+        // 延迟退出，确保资源完全释放
+        std::thread::sleep(Duration::from_millis(500));
+
+        // 强制退出（避免Tauri的清理钩子冲突）
+        std::process::exit(0);
     });
 }
 
@@ -513,23 +574,25 @@ fn main() {
 
             Ok(())
         })
+        // Tauri 2.3.0 要求 on_window_event 闭包接收 (window, event) 两个参数
         .on_window_event(move |window, event| match event {
-            tauri::WindowEvent::CloseRequested { api, .. } => {
-                println!("收到窗口关闭请求，先隐藏窗口...");
-                
-                // 阻止默认的关闭行为
+            WindowEvent::CloseRequested { api, .. } => {
+                println!("收到窗口关闭请求");
+
+                // 阻止默认关闭行为
                 api.prevent_close();
-                
-                // 立即隐藏窗口
-                let _ = window.hide();
-                
-                // 获取 AppHandle 并在后台执行清理
+
+                // 获取AppHandle并安全退出
                 let app_handle = window.app_handle().clone();
-                cleanup_and_exit(app_handle, cleanup_manager.clone());
+                safe_exit(app_handle, cleanup_manager.clone());
+
+                // 立即隐藏窗口（提升用户体验）
+                let _ = window.hide();
             }
-            tauri::WindowEvent::Destroyed => {
-                println!("窗口已销毁");
+            WindowEvent::Destroyed => {
+                println!("窗口 {} 已销毁", window.label());
             }
+            // 非穷尽变体必须加 ..
             _ => {}
         })
         .run(tauri::generate_context!())
