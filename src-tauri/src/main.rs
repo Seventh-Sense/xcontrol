@@ -572,6 +572,10 @@ fn main() {
                 process_manager.clone(),
             ));
 
+            // main_window.on_download_requested(move |window, request| {
+            //     println!("检测到重复启动，聚焦到现有窗口");
+            // });
+
             Ok(())
         })
         // Tauri 2.3.0 要求 on_window_event 闭包接收 (window, event) 两个参数
