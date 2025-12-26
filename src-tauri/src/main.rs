@@ -3,18 +3,25 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::{Command};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{
-    async_runtime, AppHandle, Emitter, Manager, WebviewWindow, WindowEvent, Wry
+    async_runtime,
+    AppHandle, Emitter, Manager, WebviewWindow, WindowEvent, Wry,
 };
 use tokio::time::sleep;
 
 #[cfg(windows)]
+use encoding_rs::GBK;
+#[cfg(windows)]
+use std::ffi::OsStr;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
-use encoding_rs::GBK;
+use std::ptr::null_mut;
 #[cfg(windows)]
 use winapi::um::handleapi::CloseHandle;
 #[cfg(windows)]
@@ -22,13 +29,7 @@ use winapi::um::processthreadsapi::{OpenProcess, TerminateProcess};
 #[cfg(windows)]
 use winapi::um::winnt::{PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE};
 #[cfg(windows)]
-use winapi::um::winuser::{UnregisterClassW, GetClassInfoW};
-#[cfg(windows)]
-use std::ffi::OsStr;
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
-#[cfg(windows)]
-use std::ptr::null_mut;
+use winapi::um::winuser::{GetClassInfoW, UnregisterClassW};
 
 // --- 配置结构 ---
 #[derive(Deserialize, Clone)]
@@ -336,7 +337,10 @@ async fn check_service_health(service: &ServiceConfig) -> bool {
     let client = reqwest::Client::new();
     let health_check_url = format!("{}{}", health_check.url, health_check.endpoint);
 
-    println!("开始对 {} 服务进行健康检查，URL: {}", service.name, health_check_url);
+    println!(
+        "开始对 {} 服务进行健康检查，URL: {}",
+        service.name, health_check_url
+    );
 
     for attempt in 1..=health_check.max_retries {
         match client.get(&health_check_url).send().await {
@@ -398,7 +402,10 @@ async fn start_all_services_and_notify(window: WebviewWindow, process_manager: P
 
         // 打印健康检查配置
         let health_check = get_health_check_config(service);
-        println!("  - 健康检查: enabled={}, url={}", health_check.enabled, health_check.url);
+        println!(
+            "  - 健康检查: enabled={}, url={}",
+            health_check.enabled, health_check.url
+        );
 
         // 通知前端服务正在启动
         let event_data = ServiceEventData {
@@ -571,10 +578,6 @@ fn main() {
                 main_window,
                 process_manager.clone(),
             ));
-
-            // main_window.on_download_requested(move |window, request| {
-            //     println!("检测到重复启动，聚焦到现有窗口");
-            // });
 
             Ok(())
         })
