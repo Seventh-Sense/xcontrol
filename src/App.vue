@@ -242,11 +242,11 @@ const cleanup = async () => {
 // 跳转到服务页面
 const redirectToService = () => {
   try {
-    window.location.href = "http://localhost:9860";
+    window.location.href = "http://127.0.0.1:9860";
   } catch (error) {
     console.error("跳转失败:", error);
     // 可以考虑使用 window.open 作为后备方案
-    window.open("http://localhost:9860", "_self");
+    window.open("http://127.0.0.1:9860", "_self");
   }
 };
 

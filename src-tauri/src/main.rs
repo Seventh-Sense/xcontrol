@@ -573,6 +573,10 @@ fn main() {
         .setup(move |app| {
             let main_window = app.get_webview_window("main").expect("找不到主窗口");
 
+
+            main_window.clear_all_browsing_data().expect("清除浏览数据失败");
+            println!("✅ 应用磁盘缓存清理完成");
+
             // 启动所有服务
             async_runtime::spawn(start_all_services_and_notify(
                 main_window,
